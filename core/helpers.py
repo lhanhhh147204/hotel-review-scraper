@@ -304,7 +304,7 @@ def parse_price(raw: str | None) -> float | None:
                 return None
         return None
 
-    digits = re.sub(r"[^\d]", "", raw)
+    digits = re.sub(r"\D", "", raw)
     if not digits:
         return None
     try:
@@ -631,7 +631,7 @@ async def make_context(browser: Browser, proxy=None) -> BrowserContext:
     proxy_settings = None
     if proxy and getattr(proxy, "host", None):
         proxy_settings = {
-            "server":   f"http://{proxy.host}:{proxy.port}",
+            "server":   f"https://{proxy.host}:{proxy.port}",
             "username": proxy.username,
             "password": proxy.password,
         }
@@ -657,8 +657,8 @@ async def make_context(browser: Browser, proxy=None) -> BrowserContext:
             "America/New_York",
         ]),
         viewport={
-            "width":  random.randint(1280, 1920),
-            "height": random.randint(768, 1080),
+            'width':  random.randint(1280, 1920),
+            'height': random.randint(768, 1080),
         },
         java_script_enabled=True,
         bypass_csp=True,
