@@ -215,11 +215,8 @@ def run_stage1_only(
             sources    = sources,
             max_pages  = max_pages,
         )
-        urls = await pipeline.stage1_collect_urls()
-        return urls  # ← THÊM DÒNG NÀY
+        await pipeline.stage1_collect_urls()
 
-    urls = asyncio.run(_run())  # ← NHẬN RETURN VALUE
-    log.info(f"✅  Stage 1 xong: {len(urls):,} URLs")
     asyncio.run(_run())
 
 
