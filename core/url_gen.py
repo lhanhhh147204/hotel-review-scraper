@@ -1,4 +1,3 @@
- url=https://github.com/lhanhhh147204/hotel-review-scraper/blob/main/core/url_gen.py
 # core/url_gen.py
 """
 URL Generation & Listing Page Scraping
