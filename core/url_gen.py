@@ -395,22 +395,28 @@ class ListingScraper:
         return list(set(urls))
 
     @classmethod
-    async def scrape_listing_page(
-            cls,
-            page:     Page,
-            url:      str,
-            platform: str,
-    ) -> list[str]:
-        """Dispatcher cho listing scraper theo platform."""
-        extractors = {
-            "booking.com":     cls.extract_hotel_urls_booking,
-            "agoda.com":       cls.extract_hotel_urls_agoda,
-            "tripadvisor.com": cls.extract_hotel_urls_tripadvisor,
-            "ivivu.com":       cls.extract_hotel_urls_ivivu,
-            "mytour.vn":       cls.extract_hotel_urls_mytour,
-            "traveloka.com":   cls.extract_hotel_urls_traveloka,
-        }
-        for key, extractor in extractors.items():
-            if key in platform:
-                return await extractor(page)
-        return []
+async def scrape_listing_page(
+    cls,
+    page: Page,
+    url: str,
+    platform: str,
+) -> list[str]:
+    """Dispatcher cho listing scraper theo platform."""
+    extractors = {
+        "booking.com":    cls.extract_hotel_urls_booking,
+        "agoda.com":      cls.extract_hotel_urls_agoda,
+        "tripadvisor.com": cls.extract_hotel_urls_tripadvisor,
+        "ivivu.com":      cls.extract_hotel_urls_ivivu,
+        "mytour.vn":      cls.extract_hotel_urls_mytour,
+        "traveloka.com":  cls.extract_hotel_urls_traveloka,
+    }
+    
+    log.info(f"📍 Platform: {platform}")  # ← DEBUG
+    
+    for key, extractor in extractors.items():
+        if key in platform:
+            log.info(f"✅ Matched extractor: {key}")  # ← DEBUG
+            return await extractor(page)
+    
+    log.warning(f"⚠️  No extractor found for: {platform}")  # ← DEBUG
+    return []
