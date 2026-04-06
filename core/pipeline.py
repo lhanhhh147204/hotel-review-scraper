@@ -39,11 +39,11 @@ BROWSER_ARGS = [
 class TwoStagePipeline:
 
     def __init__(
-            self,
-            provinces: list[str],
-            sources: list[str],
-            max_pages: int = 5,
-            concurrent: int = CFG.max_concurrent,
+        self,
+        provinces: list[str],
+        sources: list[str],
+        max_pages: int = 5,
+        concurrent: int = CFG.max_concurrent,
     ):
         self.provinces = provinces
         self.sources = sources
@@ -106,9 +106,7 @@ class TwoStagePipeline:
         # Đọc URLs đã có
         collected: set[str] = set(
             line.strip()
-            for line in self.hotel_urls_file
-            .read_text("utf-8")
-            .splitlines()
+            for line in self.hotel_urls_file.read_text("utf-8").splitlines()
             if line.strip().startswith("http")
         )
         log.info(f"📋  Đã có sẵn: {len(collected):,} URLs")
@@ -126,10 +124,11 @@ class TwoStagePipeline:
         new_urls: list[str] = []
         lock = asyncio.Lock()
 
+        # ── Hàm lồng — phải nằm BÊN TRONG stage1_collect_urls ──
         async def _scrape_one_listing(
-                listing_url: str,
-                platform: str,
-                pbar,
+            listing_url: str,
+            platform: str,
+            pbar: tqdm,
         ) -> None:
             async with sem:
                 proxy = await self.proxy_pool.get()
@@ -145,23 +144,17 @@ class TwoStagePipeline:
                     )
 
                     async with lock:
-                        fresh = [
-                            u for u in hotel_urls
-                            if u not in collected
-                        ]
+                        fresh = [u for u in hotel_urls if u not in collected]
                         if fresh:
                             collected.update(fresh)
                             new_urls.extend(fresh)
-                            with self.hotel_urls_file.open(
-                                    "a", encoding="utf-8"
-                            ) as f:
+                            with self.hotel_urls_file.open("a", encoding="utf-8") as f:
                                 f.write("\n".join(fresh) + "\n")
 
-                        await self.throttle.record_success()
-                        log.info(
-                            f"  ✅ +{len(fresh):>3} URLs | "
-                            f"{listing_url[:55]}"
-                            )
+                    await self.throttle.record_success()
+                    log.info(
+                        f"  ✅ +{len(fresh):>3} URLs | {listing_url[:55]}"
+                    )
 
                 except Exception as e:
                     is_blocked = any(
@@ -176,51 +169,48 @@ class TwoStagePipeline:
                     await ctx.close()
                     pbar.update(1)
 
-                    # ── Chạy tất cả listing tasks ─────────────────────────
-            async with async_playwright() as pw:
-                self._browser = await pw.chromium.launch(
-                    headless=True,
-                    args=BROWSER_ARGS,
-                )
-                pbar = tqdm(
-                    total=total_listing,
-                    desc="Stage 1 — Listing",
-                    unit="page",
-                    colour="cyan",
-                )
-                tasks = []
-                for province, urls in all_listing.items():
-                    for url in urls:
-                        platform = urlparse(url).netloc
-                        tasks.append(
-                            _scrape_one_listing(url, platform, pbar)
-                        )
+        # ── Chạy tất cả listing tasks ─────────────────────────
+        async with async_playwright() as pw:
+            self._browser = await pw.chromium.launch(
+                headless=True,
+                args=BROWSER_ARGS,
+            )
+            pbar = tqdm(
+                total=total_listing,
+                desc="Stage 1 — Listing",
+                unit="page",
+                colour="cyan",
+            )
+            tasks = [
+                _scrape_one_listing(url, urlparse(url).netloc, pbar)
+                for province_urls in all_listing.values()
+                for url in province_urls
+            ]
 
+            try:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
                 pbar.close()
                 await self._browser.close()
+                self._browser = None
 
-            all_hotel_urls = list(collected)
-            log.info(
-                f"✅  Stage 1 xong: {len(all_hotel_urls):,} hotel URLs "
-                f"({len(new_urls):,} mới)"
-            )
-            return all_hotel_urls
+        all_hotel_urls = list(collected)
+        log.info(
+            f"✅  Stage 1 xong: {len(all_hotel_urls):,} hotel URLs "
+            f"({len(new_urls):,} mới)"
+        )
+        return all_hotel_urls
 
     # ── Stage 2 ───────────────────────────────────────────────
-
     async def stage2_scrape_details(
-            self,
-            hotel_urls: list[str],
+        self,
+        hotel_urls: list[str],
     ) -> None:
         log.info("=" * 65)
         log.info("🏨  STAGE 2: Scrape chi tiết khách sạn")
         log.info("=" * 65)
 
-        pending = [
-            u for u in hotel_urls
-            if not self.state.should_skip(u)
-        ]
+        pending = [u for u in hotel_urls if not self.state.should_skip(u)]
         done_count = len(hotel_urls) - len(pending)
 
         log.info(
@@ -244,54 +234,52 @@ class TwoStagePipeline:
 
         # ── Chạy theo batch để tránh memory leak ──────────────
         batch_size = CFG.browser_restart_each
-        for batch_idx in range(0, len(pending), batch_size):
-            batch = pending[batch_idx: batch_idx + batch_size]
-            log.info(
-                f"🔄  Batch {batch_idx // batch_size + 1} | "
-                f"URLs {batch_idx + 1}–"
-                f"{batch_idx + len(batch):,} / {len(pending):,}"
-            )
-
-            async with async_playwright() as pw:
-                self._browser = await pw.chromium.launch(
-                    headless=True,
-                    args=BROWSER_ARGS,
+        try:
+            for batch_idx in range(0, len(pending), batch_size):
+                batch = pending[batch_idx : batch_idx + batch_size]
+                log.info(
+                    f"🔄  Batch {batch_idx // batch_size + 1} | "
+                    f"URLs {batch_idx + 1}–{batch_idx + len(batch):,} / {len(pending):,}"
                 )
-                try:
-                    await asyncio.gather(
-                        *[
-                            process_url(
-                                url=u,
-                                browser=self._browser,
-                                sem=sem,
-                                state=self.state,
-                                metrics=self.metrics,
-                                throttle=self.throttle,
-                                proxy_pool=self.proxy_pool,
-                                session_mgr=self.session_mgr,
-                                pbar=pbar,
-                            )
-                            for u in batch
-                        ],
-                        return_exceptions=True,
+
+                async with async_playwright() as pw:
+                    self._browser = await pw.chromium.launch(
+                        headless=True,
+                        args=BROWSER_ARGS,
                     )
-                finally:
-                    await self._browser.close()
+                    try:
+                        await asyncio.gather(
+                            *[
+                                process_url(
+                                    url=u,
+                                    browser=self._browser,
+                                    sem=sem,
+                                    state=self.state,
+                                    metrics=self.metrics,
+                                    throttle=self.throttle,
+                                    proxy_pool=self.proxy_pool,
+                                    session_mgr=self.session_mgr,
+                                    pbar=pbar,
+                                )
+                                for u in batch
+                            ],
+                            return_exceptions=True,
+                        )
+                    finally:
+                        await self._browser.close()
+                        self._browser = None
 
-            # ── Nghỉ giữa batch ───────────────────────────────
-            if batch_idx + batch_size < len(pending):
-                pause = random.uniform(
-                    CFG.batch_pause_min,
-                    CFG.batch_pause_max,
-                )
-                log.info(f"⏸️  Nghỉ {pause:.0f}s giữa batch...")
-                await asyncio.sleep(pause)
+                # ── Nghỉ giữa batch ───────────────────────────
+                if batch_idx + batch_size < len(pending):
+                    pause = random.uniform(CFG.batch_pause_min, CFG.batch_pause_max)
+                    log.info(f"⏸️  Nghỉ {pause:.0f}s giữa batch...")
+                    await asyncio.sleep(pause)
+        finally:
+            pbar.close()
 
-        pbar.close()
         log.info(self.metrics.report())
 
-        # ── Run ───────────────────────────────────────────────────
-
+    # ── Run ───────────────────────────────────────────────────
     async def run(self) -> None:
         start = time.time()
         log.info("🚀  BẮT ĐẦU PIPELINE 2 GIAI ĐOẠN")
@@ -309,8 +297,12 @@ class TwoStagePipeline:
             log.error(f"❌  Pipeline lỗi: {e}", exc_info=True)
         finally:
             elapsed = time.time() - start
-            log.info(
-                f"⏱️  Tổng thời gian: {elapsed / 3600:.1f} giờ"
-            )
+            log.info(f"⏱️  Tổng thời gian: {elapsed / 3600:.1f} giờ")
             log.info(self.metrics.report())
+            # Đảm bảo browser được đóng nếu bị crash giữa chừng
+            if self._browser is not None:
+                try:
+                    await self._browser.close()
+                except Exception:
+                    pass
             close_pool()
