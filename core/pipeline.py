@@ -112,7 +112,7 @@ class TwoStagePipeline:
         log.info(f"📋  Đã có sẵn: {len(collected):,} URLs")
 
         # Sinh listing URLs
-        all_listing = URLGenerator.generate_all(
+        all_listing = URLGenerator().generate_all(
             provinces=self.provinces,
             sources=self.sources,
             max_pages=self.max_pages,
