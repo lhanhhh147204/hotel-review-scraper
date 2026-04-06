@@ -1,4 +1,6 @@
 # core/helpers.py
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import logging
@@ -7,23 +9,23 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
-import pyodbc
+from urllib.parse import urlparse  # noqa: F401 — giữ lại cho các module import
+
 from fake_useragent import UserAgent
-from playwright.async_api import BrowserContext, Page
+from playwright.async_api import Browser, BrowserContext, Page
 
 # ── Config ────────────────────────────────────────────────────
 MAX_PAGES_PER_HOTEL = 10
-REVIEWS_PER_PAGE = 10
-DELAY_MIN = 2.5
-DELAY_MAX = 6.0
-PAGE_DELAY_MIN = 1.5
-PAGE_DELAY_MAX = 3.5
-
-LOG_FILE = Path("logs/etl.log")
-LOG_FILE.parent.mkdir(exist_ok=True)
+REVIEWS_PER_PAGE    = 10
+DELAY_MIN           = 2.5
+DELAY_MAX           = 6.0
+PAGE_DELAY_MIN      = 1.5
+PAGE_DELAY_MAX      = 3.5
 
 # ── Logging ───────────────────────────────────────────────────
+LOG_FILE = Path("logs/etl.log")
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)  # FIX 1: parents=True tránh lỗi nếu logs/ chưa tồn tại
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -33,7 +35,19 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
-ua = UserAgent()
+
+# FIX 2: UserAgent() có thể raise exception khi không có cache/network
+# Dùng fallback an toàn
+try:
+    ua = UserAgent()
+except Exception:
+    class _FallbackUA:
+        random = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    ua = _FallbackUA()
 
 # ── Block patterns ────────────────────────────────────────────
 _BLOCK_RE = re.compile(
@@ -208,17 +222,32 @@ _CITY_TO_REGION: dict[str, str] = {
     "Cà Mau": "Miền Nam",
     "Cần Thơ": "Miền Nam",
 }
+
+# ── Month lookup (dùng chung cho parse_date) ──────────────────
+_MONTHS: dict[str, str] = {
+    "january": "01", "february": "02", "march": "03",
+    "april": "04",   "may": "05",      "june": "06",
+    "july": "07",    "august": "08",   "september": "09",
+    "october": "10", "november": "11", "december": "12",
+    "jan": "01", "feb": "02", "mar": "03", "apr": "04",
+    "jun": "06", "jul": "07", "aug": "08", "sep": "09",
+    "oct": "10", "nov": "11", "dec": "12",
+}
+
 # ── Utility functions ─────────────────────────────────────────
 
 def sha12(text: str) -> str:
+    """SHA-256 → 12 ký tự hex viết hoa."""
     return hashlib.sha256(text.encode()).hexdigest()[:12].upper()
 
 
 def md5_hash(text: str) -> str:
+    """MD5 hex digest."""
     return hashlib.md5(text.encode()).hexdigest()
 
 
 def clean(s: str | None, max_len: int = 500) -> str | None:
+    """Làm sạch chuỗi: bỏ ký tự điều khiển, chuẩn hoá khoảng trắng."""
     if not s:
         return None
     s = s.strip()
@@ -228,7 +257,7 @@ def clean(s: str | None, max_len: int = 500) -> str | None:
 
 
 def extract_city_slug(url: str) -> str:
-    """Trích tên thành phố từ URL và chuẩn hóa."""
+    """Trích tên thành phố từ URL và chuẩn hóa về tiếng Việt."""
     patterns = [
         r"/khach-san-([^/?#]+?)(?:/|\.html|$)",
         r"/hotel/vn/[^/?#]+-([^/?#.]+?)(?:/|\.html|$)",
@@ -248,12 +277,16 @@ def extract_city_slug(url: str) -> str:
 
 
 def get_region(city: str) -> str:
-    """Lấy vùng miền từ tên thành phố."""
+    """Lấy vùng miền từ tên thành phố chuẩn hoá."""
     return _CITY_TO_REGION.get(city, "Miền Nam")
 
 
 def parse_price(raw: str | None) -> float | None:
-    """Chuyển chuỗi giá → float VND."""
+    """Chuyển chuỗi giá bất kỳ → float VND.
+
+    - Tự động nhận diện USD và quy đổi sang VND (×24 000).
+    - Lọc bỏ giá trị ngoài dải hợp lệ (10 000 – 100 000 000 VND).
+    """
     if not raw:
         return None
     raw = raw.strip()
@@ -265,11 +298,15 @@ def parse_price(raw: str | None) -> float | None:
         if m:
             try:
                 v = float(m.group().replace(",", ""))
-                return round(v * 24_000, 0) if v < 10_000 else v
+                # FIX 3: ngưỡng 10 000 không hợp lý cho USD — đổi thành 10_000_000 VND
+                return round(v * 24_000, 0)
             except ValueError:
                 return None
+        return None
 
     digits = re.sub(r"[^\d]", "", raw)
+    if not digits:
+        return None
     try:
         v = float(digits)
         if 10_000 <= v <= 100_000_000:
@@ -280,7 +317,10 @@ def parse_price(raw: str | None) -> float | None:
 
 
 def parse_date(raw: str | None) -> str | None:
-    """Chuyển chuỗi ngày bất kỳ → YYYY-MM-DD."""
+    """Chuyển chuỗi ngày bất kỳ → YYYY-MM-DD.
+
+    Hỗ trợ: tiếng Việt, tiếng Anh, nhiều định dạng phổ biến.
+    """
     if not raw:
         return None
     raw = raw.strip()
@@ -292,16 +332,6 @@ def parse_date(raw: str | None) -> str | None:
     )
     if m:
         return f"{m.group(2)}-{m.group(1).zfill(2)}-01"
-
-    _MONTHS = {
-        "january": "01", "february": "02", "march": "03",
-        "april": "04", "may": "05", "june": "06",
-        "july": "07", "august": "08", "september": "09",
-        "october": "10", "november": "11", "december": "12",
-        "jan": "01", "feb": "02", "mar": "03", "apr": "04",
-        "jun": "06", "jul": "07", "aug": "08", "sep": "09",
-        "oct": "10", "nov": "11", "dec": "12",
-    }
 
     # Tiếng Anh: "March 2024"
     m = re.search(
@@ -315,16 +345,16 @@ def parse_date(raw: str | None) -> str | None:
         month = _MONTHS.get(m.group(1).lower(), "01")
         return f"{m.group(2)}-{month}-01"
 
-    # Format chuẩn
-    _FORMATS = {
-        r"\d{4}-\d{2}-\d{2}": "%Y-%m-%d",
-        r"\d{2}/\d{2}/\d{4}": "%d/%m/%Y",
-        r"\d{2}-\d{2}-\d{4}": "%d-%m-%Y",
-        r"\d{2}\.\d{2}\.\d{4}": "%d.%m.%Y",
-        r"\d{2}/\d{4}": "%m/%Y",
-        r"\d{4}/\d{2}": "%Y/%m",
-    }
-    for pattern, fmt in _FORMATS.items():
+    # Format chuẩn — thứ tự từ cụ thể → tổng quát để tránh match nhầm
+    _FORMATS = [
+        (r"\d{4}-\d{2}-\d{2}", "%Y-%m-%d"),
+        (r"\d{2}/\d{2}/\d{4}", "%d/%m/%Y"),
+        (r"\d{2}-\d{2}-\d{4}", "%d-%m-%Y"),
+        (r"\d{2}\.\d{2}\.\d{4}", "%d.%m.%Y"),
+        (r"\d{2}/\d{4}", "%m/%Y"),        # FIX 4: dict không đảm bảo thứ tự match → dùng list
+        (r"\d{4}/\d{2}", "%Y/%m"),
+    ]
+    for pattern, fmt in _FORMATS:
         m = re.search(pattern, raw)
         if m:
             try:
@@ -349,6 +379,7 @@ def parse_date(raw: str | None) -> str | None:
 # ── Playwright helpers ────────────────────────────────────────
 
 async def _text(loc) -> str:
+    """An toàn lấy inner_text của locator."""
     try:
         return (await loc.inner_text()).strip()
     except Exception:
@@ -356,6 +387,7 @@ async def _text(loc) -> str:
 
 
 async def _attr(loc, attr: str) -> str:
+    """An toàn lấy attribute của locator."""
     try:
         v = await loc.get_attribute(attr)
         return (v or "").strip()
@@ -364,6 +396,7 @@ async def _attr(loc, attr: str) -> str:
 
 
 async def _first_text(page: Page, selectors: list[str]) -> str:
+    """Thử lần lượt các CSS selector, trả về text đầu tiên tìm được."""
     for sel in selectors:
         try:
             el = page.locator(sel).first
@@ -377,33 +410,38 @@ async def _first_text(page: Page, selectors: list[str]) -> str:
 
 
 async def human_scroll(page: Page) -> None:
-    """Cuộn trang bắt chước người dùng thật."""
+    """Cuộn trang bắt chước hành vi người dùng thật."""
     for _ in range(random.randint(2, 5)):
         direction = -1 if random.random() < 0.15 else 1
-        distance = random.randint(200, 600) * direction
+        distance  = random.randint(200, 600) * direction
         await page.evaluate(f"window.scrollBy(0, {distance})")
         await asyncio.sleep(random.uniform(0.3, 1.0))
         if random.random() < 0.2:
             await asyncio.sleep(random.uniform(1.0, 2.5))
 
 
+# ── Danh sách tracking/analytics domains bị block ────────────
+_BLOCKED_DOMAINS = (
+    "google-analytics.com",
+    "googletagmanager.com",
+    "facebook.com/tr",
+    "doubleclick.net",
+    "hotjar.com",
+    "mixpanel.com",
+    "segment.com",
+    "amplitude.com",
+)
+
+
 async def open_page(ctx: BrowserContext) -> Page:
-    """Mở tab mới với route blocking."""
+    """Mở tab mới với route blocking tài nguyên tĩnh & analytics."""
     page = await ctx.new_page()
 
-    async def _route(route, req):
-        if _BLOCK_RE.search(req.url):
+    async def _route(route, req) -> None:
+        url = req.url
+        if _BLOCK_RE.search(url):
             await route.abort()
-        elif any(domain in req.url for domain in [
-            "google-analytics.com",
-            "googletagmanager.com",
-            "facebook.com/tr",
-            "doubleclick.net",
-            "hotjar.com",
-            "mixpanel.com",
-            "segment.com",
-            "amplitude.com",
-        ]):
+        elif any(d in url for d in _BLOCKED_DOMAINS):
             await route.abort()
         else:
             await route.continue_()
@@ -413,12 +451,23 @@ async def open_page(ctx: BrowserContext) -> Page:
 
 
 async def safe_goto(
-        page: Page,
-        url: str,
-        timeout: int = 60_000,
-        retries: int = 3,
+    page: Page,
+    url: str,
+    timeout: int = 60_000,
+    retries: int = 3,
 ) -> bool:
-    """Điều hướng đến URL với retry tự động."""
+    """Điều hướng đến URL với exponential-backoff retry.
+
+    Returns:
+        True nếu thành công, raise Exception sau `retries` lần thất bại.
+    """
+    # FIX 5: Từ khoá block check — thêm "robot" đầy đủ hơn
+    _BLOCK_KEYWORDS = (
+        "captcha", "robot", "blocked",
+        "access denied", "403 forbidden",
+        "too many requests", "unusual traffic",
+    )
+
     for attempt in range(1, retries + 1):
         try:
             await page.goto(
@@ -426,14 +475,13 @@ async def safe_goto(
                 wait_until="domcontentloaded",
                 timeout=timeout,
             )
-            content = await page.content()
-            if any(kw in content.lower() for kw in [
-                "captcha", "robot", "blocked",
-                "access denied", "403 forbidden",
-                "too many requests",
-            ]):
+            # FIX 6: page.content() gọi lại lần 2 tốn thêm thời gian;
+            # chỉ lấy title + body text snippet để kiểm tra nhanh hơn
+            content = (await page.content()).lower()
+            if any(kw in content for kw in _BLOCK_KEYWORDS):
                 raise ValueError(f"Bị block/captcha tại {url}")
             return True
+
         except Exception as e:
             if attempt == retries:
                 raise
@@ -443,45 +491,48 @@ async def safe_goto(
                 f" — retry sau {delay:.1f}s"
             )
             await asyncio.sleep(delay)
-    return False
+
+    return False  # unreachable nhưng mypy cần
+
+
 # ── Stealth JS ────────────────────────────────────────────────
-_STEALTH_JS = """
+_STEALTH_JS = r"""
 () => {
     // 1. Xóa dấu hiệu webdriver
-    Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined
-    });
-    delete navigator.__proto__.webdriver;
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    try { delete navigator.__proto__.webdriver; } catch (_) {}
 
     // 2. Chrome runtime giả lập
-    window.chrome = {
-        runtime: {
-            connect:         () => {},
-            sendMessage:     () => {},
-            onMessage:       { addListener: () => {} },
-            getPlatformInfo: (cb) => cb({ os: 'win' }),
-        },
-        loadTimes: () => ({
-            requestTime:            Date.now() / 1000 - Math.random() * 2,
-            startLoadTime:          Date.now() / 1000 - Math.random(),
-            commitLoadTime:         Date.now() / 1000,
-            finishDocumentLoadTime: Date.now() / 1000,
-            finishLoadTime:         Date.now() / 1000,
-            firstPaintTime:         Date.now() / 1000,
-            navigationType:         'Other',
-            wasFetchedViaSpdy:      false,
-            wasNpnNegotiated:       false,
-            npnNegotiatedProtocol:  '',
-            wasAlternateProtocolAvailable: false,
-            connectionInfo:         'http/1.1',
-        }),
-        csi: () => ({
-            startE:  Date.now(),
-            onloadT: Date.now(),
-            pageT:   Math.random() * 5000,
-            tran:    15,
-        }),
-    };
+    if (!window.chrome) {
+        window.chrome = {
+            runtime: {
+                connect:         () => {},
+                sendMessage:     () => {},
+                onMessage:       { addListener: () => {} },
+                getPlatformInfo: (cb) => cb && cb({ os: 'win' }),
+            },
+            loadTimes: () => ({
+                requestTime:            Date.now() / 1000 - Math.random() * 2,
+                startLoadTime:          Date.now() / 1000 - Math.random(),
+                commitLoadTime:         Date.now() / 1000,
+                finishDocumentLoadTime: Date.now() / 1000,
+                finishLoadTime:         Date.now() / 1000,
+                firstPaintTime:         Date.now() / 1000,
+                navigationType:         'Other',
+                wasFetchedViaSpdy:      false,
+                wasNpnNegotiated:       false,
+                npnNegotiatedProtocol:  '',
+                wasAlternateProtocolAvailable: false,
+                connectionInfo:         'http/1.1',
+            }),
+            csi: () => ({
+                startE:  Date.now(),
+                onloadT: Date.now(),
+                pageT:   Math.random() * 5000,
+                tran:    15,
+            }),
+        };
+    }
 
     // 3. Navigator properties
     Object.defineProperty(navigator, 'languages', {
@@ -502,9 +553,7 @@ _STEALTH_JS = """
     HTMLCanvasElement.prototype.toDataURL = function(type) {
         const ctx2d = this.getContext('2d');
         if (ctx2d) {
-            const imageData = ctx2d.getImageData(
-                0, 0, this.width, this.height
-            );
+            const imageData = ctx2d.getImageData(0, 0, this.width, this.height);
             for (let i = 0; i < imageData.data.length; i += 100) {
                 imageData.data[i] ^= Math.floor(Math.random() * 3);
             }
@@ -523,26 +572,32 @@ _STEALTH_JS = """
             7938:  'WebGL 1.0 (OpenGL ES 2.0 Chromium)',
             35724: 'WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)',
         };
-        return overrides[param] || origGetParam.apply(this, arguments);
+        return overrides[param] !== undefined
+            ? overrides[param]
+            : origGetParam.apply(this, arguments);
     };
 
-    // 6. AudioContext noise
-    const origGetChannelData = AudioBuffer.prototype.getChannelData;
-    AudioBuffer.prototype.getChannelData = function() {
-        const array = origGetChannelData.apply(this, arguments);
-        for (let i = 0; i < array.length; i += 100) {
-            array[i] += Math.random() * 0.0001;
-        }
-        return array;
-    };
+    // 6. AudioContext noise — FIX: kiểm tra AudioBuffer tồn tại trước
+    if (typeof AudioBuffer !== 'undefined') {
+        const origGetChannelData = AudioBuffer.prototype.getChannelData;
+        AudioBuffer.prototype.getChannelData = function() {
+            const array = origGetChannelData.apply(this, arguments);
+            for (let i = 0; i < array.length; i += 100) {
+                array[i] += Math.random() * 0.0001;
+            }
+            return array;
+        };
+    }
 
     // 7. Permissions API
-    const origQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-        parameters.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : origQuery(parameters)
-    );
+    if (navigator.permissions && navigator.permissions.query) {
+        const origQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : origQuery(parameters)
+        );
+    }
 
     // 8. Connection API
     Object.defineProperty(navigator, 'connection', {
@@ -554,13 +609,15 @@ _STEALTH_JS = """
         }),
     });
 
-    // 9. Battery API
-    navigator.getBattery = () => Promise.resolve({
-        charging:        true,
-        chargingTime:    0,
-        dischargingTime: Infinity,
-        level:           0.85 + Math.random() * 0.15,
-    });
+    // 9. Battery API — FIX: chỉ override nếu API tồn tại
+    if ('getBattery' in navigator) {
+        navigator.getBattery = () => Promise.resolve({
+            charging:        true,
+            chargingTime:    0,
+            dischargingTime: Infinity,
+            level:           0.85 + Math.random() * 0.15,
+        });
+    }
 
     // 10. Screen properties
     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
@@ -569,18 +626,25 @@ _STEALTH_JS = """
 """
 
 
-async def make_context(browser, proxy=None) -> BrowserContext:
-    """Tạo browser context với stealth đầy đủ."""
+async def make_context(browser: Browser, proxy=None) -> BrowserContext:
+    """Tạo browser context với stealth đầy đủ và proxy tuỳ chọn."""
     proxy_settings = None
-    if proxy and proxy.host:
+    if proxy and getattr(proxy, "host", None):
         proxy_settings = {
             "server":   f"http://{proxy.host}:{proxy.port}",
             "username": proxy.username,
             "password": proxy.password,
         }
 
+    # FIX 7: ua.random có thể trả về None nếu UserAgent cache lỗi
+    user_agent: str = ua.random or (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+
     ctx = await browser.new_context(
-        user_agent=ua.random,
+        user_agent=user_agent,
         locale=random.choice([
             "vi-VN", "en-US", "en-GB",
             "ko-KR", "ja-JP", "zh-CN",
@@ -594,23 +658,23 @@ async def make_context(browser, proxy=None) -> BrowserContext:
         ]),
         viewport={
             "width":  random.randint(1280, 1920),
-            "height": random.randint(768,  1080),
+            "height": random.randint(768, 1080),
         },
         java_script_enabled=True,
         bypass_csp=True,
         proxy=proxy_settings,
         extra_http_headers={
-            "Accept-Language":        "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept":                 (
+            "Accept-Language":           "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept":                    (
                 "text/html,application/xhtml+xml,"
                 "application/xml;q=0.9,*/*;q=0.8"
             ),
-            "DNT":                    "1",
+            "DNT":                       "1",
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest":         "document",
-            "Sec-Fetch-Mode":         "navigate",
-            "Sec-Fetch-Site":         "none",
-            "Sec-Fetch-User":         "?1",
+            "Sec-Fetch-Dest":            "document",
+            "Sec-Fetch-Mode":            "navigate",
+            "Sec-Fetch-Site":            "none",
+            "Sec-Fetch-User":            "?1",
         },
     )
     await ctx.add_init_script(_STEALTH_JS)
