@@ -1,0 +1,51 @@
+2026-04-04 13:59:36,653 [INFO] ✅  underthesea loaded — NLP tiếng Việt nâng cao
+2026-04-04 13:59:36,688 [INFO] ✅  langdetect loaded
+2026-04-04 14:04:09,318 [INFO] ✅  underthesea loaded — NLP tiếng Việt nâng cao
+2026-04-04 14:04:09,328 [INFO] ✅  langdetect loaded
+2026-04-04 15:02:51,915 [INFO] ✅  underthesea loaded — NLP tiếng Việt nâng cao
+2026-04-04 15:02:51,938 [INFO] ✅  langdetect loaded
+2026-04-04 15:35:12,191 [INFO] ✅  underthesea loaded — NLP tiếng Việt nâng cao
+2026-04-04 15:35:12,203 [INFO] ✅  langdetect loaded
+2026-04-06 14:58:24,935 [INFO] ✅  underthesea loaded — NLP tiếng Việt nâng cao
+2026-04-06 14:58:24,966 [INFO] ✅  langdetect loaded
+2026-04-06 14:58:26,879 [INFO] 🚀  Bắt đầu scrape tier=tier_1 | 10 tỉnh | concurrent=3
+2026-04-06 14:58:26,887 [WARNING] ⚠️  Không có proxy — chạy trực tiếp
+2026-04-06 14:58:26,887 [INFO] 🔌  Loaded 1 proxies
+2026-04-06 14:58:26,888 [INFO] 🚀  BẮT ĐẦU PIPELINE 2 GIAI ĐOẠN
+2026-04-06 14:58:26,888 [INFO]     Tỉnh thành : 10
+2026-04-06 14:58:26,888 [INFO]     Nguồn      : booking, agoda, tripadvisor, airbnb, ivivu, google_maps, traveloka
+2026-04-06 14:58:26,888 [INFO]     Concurrent : 3
+2026-04-06 14:58:26,888 [INFO]     Max pages  : 5
+2026-04-06 14:58:26,888 [INFO] =================================================================
+2026-04-06 14:58:26,888 [INFO] 🔍  STAGE 1: Thu thập URL khách sạn
+2026-04-06 14:58:26,888 [INFO] =================================================================
+2026-04-06 14:58:26,889 [INFO] 📋  Đã có sẵn: 0 URLs
+2026-04-06 14:58:26,889 [INFO] 🚀  Listing URLs cần scrape: 300
+2026-04-06 14:58:26,889 [INFO] =================================================================
+2026-04-06 14:58:26,889 [INFO] 🏨  STAGE 2: Scrape chi tiết khách sạn
+2026-04-06 14:58:26,890 [INFO] =================================================================
+2026-04-06 14:58:26,890 [ERROR] ❌  Pipeline lỗi: 'NoneType' object is not iterable
+Traceback (most recent call last):
+  File "C:\Users\lehoa\PyCharmMiscProject\big_data\core\pipeline.py", line 305, in run
+    await self.stage2_scrape_details(hotel_urls)
+  File "C:\Users\lehoa\PyCharmMiscProject\big_data\core\pipeline.py", line 221, in stage2_scrape_details
+    u for u in hotel_urls
+               ^^^^^^^^^^
+TypeError: 'NoneType' object is not iterable
+2026-04-06 14:58:26,891 [INFO] ⏱️  Tổng thời gian: 0.0 giờ
+2026-04-06 14:58:26,892 [INFO] 
+════════════════════════════════════════════════════════════
+📊  PIPELINE METRICS
+════════════════════════════════════════════════════════════
+  Tổng xử lý    :      0
+  Thành công    :      0 (0.0%)
+  Thất bại      :      0
+  Tổng phòng    :      0
+  Tổng review   :      0
+  Thời gian TB  :    0.0s/KS
+  Tổng thời gian: 0.0h
+════════════════════════════════════════════════════════════
+2026-04-06 14:58:26,892 [INFO] 🔌  DB connection pool đã đóng
+2026-04-06 14:58:26,893 [INFO] 🔌  DB connection pool đã đóng
+2026-04-06 15:05:24,022 [INFO] ✅  underthesea loaded — NLP tiếng Việt nâng cao
+2026-04-06 15:05:24,035 [INFO] ✅  langdetect loaded
